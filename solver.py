@@ -63,7 +63,10 @@ class ZeroShotKTSolver(object):
                                     pretrained_models_path=args.pretrained_models_path).to(args.device)
         self.teacher.eval()
         self.student.train()
-        self.annealator = grad_anneal(alpha=5, gamma=2.5, feature_size=32 ** 2, batch_size=args.batch_size)
+        self.annealator = grad_anneal(alpha=args.alpha,
+                                      gamma=args.gamma,
+                                      feature_size=32 ** 2,
+                                      batch_size=args.batch_size)
 
         ## Loaders
         self.n_repeat_batch = args.n_generator_iter + args.n_student_iter
@@ -136,7 +139,7 @@ class ZeroShotKTSolver(object):
                 student_logits, *student_activations = self.student(x_pseudo)
                 teacher_logits, *teacher_activations = self.teacher(x_pseudo)
 
-                generator_loss = self.KT_loss_generator(student_logits, teacher_logits)
+                generator_loss = self.args.sigma * self.KT_loss_generator(student_logits, teacher_logits)
                 reg_loss = self.annealator(outputs=generator_loss, inputs=x_pseudo)
                 total_loss = generator_loss + reg_loss
 

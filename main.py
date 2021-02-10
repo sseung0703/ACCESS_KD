@@ -64,6 +64,9 @@ if __name__ == "__main__":
     parser.add_argument('--log_directory_path', type=str, default="./logs")
     parser.add_argument('--save_model_path', type=str, default="./save/")
     parser.add_argument('--workers', type=int, default=8)
+    parser.add_argument('--alpha', type=float, default=5)
+    parser.add_argument('--gamma', type=float, default=2.5)
+    parser.add_argument('--sigma', type=float, default=1)
 
     parser.add_argument('--save_n_checkpoints', type=int, default=0, help="Useless")
 

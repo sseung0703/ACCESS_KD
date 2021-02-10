@@ -1,17 +1,51 @@
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
 import torch.optim as optim
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-
-import os
 import shutil
 from time import time
 from utils.logger import *
 from utils.datasets import *
 from models.selector import *
 from utils.loaders import *
+from torch.autograd import grad
 
+# def stack_grad(self, model): -> for gradident check.
+    #     total_norm = 0
+    #     for p in model.parameters():
+    #         param_norm = p.grad.data.norm(2)
+    #         total_norm += param_norm.item() ** 2
+    #     total_norm = total_norm ** (1. / 2)
+    #
+    #     return total_norm
+
+class grad_anneal(nn.Module):
+    def __init__(self, alpha, gamma, batch_size, feature_size):
+        super(grad_anneal, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.batch_size = batch_size
+        self.feature_size = feature_size
+        self.register_buffer('Gaussian_generator', torch.zeros(batch_size, feature_size))
+        self.register_buffer('L2_GRAD_NORM', torch.zeros(1))
+        self.register_buffer('approx_constraint', torch.zeros(1))
+
+    def forward(self, outputs, inputs):
+        self.Gaussian_generator = torch.randn(self.batch_size, self.feature_size)
+        self.L2_GRAD_NORM, _Gradient = self._grad(outputs=outputs, inputs=inputs)
+        self.approx_constraint = self._constraint(Gradient=_Gradient, rv=self.Gaussian_generator)
+
+        return self.alpha * self.approx_constraint + 0.5 * self.gamma * self.L2_GRAD_NORM
+
+    def _grad(self, outputs, inputs):
+        Gradient = grad(outputs=outputs,
+                        inputs=inputs,
+                        grad_outputs=torch.ones_like(inputs.shape),
+                        retain_graph=True,
+                        create_graph=True)[0]
+        Gradient = Gradient.view(self.batch_size, -1)
+        GradNorm = torch.mean(torch.bmm(Gradient.unsqueeze(1), Gradient.unsqueeze(-1)).squeeze())
+        return GradNorm, Gradient
+
+    def _constraint(self, Gradient, rv):
+        return torch.mean(torch.bmm(Gradient.unsqueeze(1), rv.unsqueeze(-1)).squeeze()).abs()
 
 class ZeroShotKTSolver(object):
     """ Main solver class to train and test the generator and student adversarially """
@@ -29,6 +63,7 @@ class ZeroShotKTSolver(object):
                                     pretrained_models_path=args.pretrained_models_path).to(args.device)
         self.teacher.eval()
         self.student.train()
+        self.annealator = grad_anneal(alpha=5, gamma=2.5, feature_size=32 ** 2, batch_size=args.batch_size)
 
         ## Loaders
         self.n_repeat_batch = args.n_generator_iter + args.n_student_iter
@@ -36,9 +71,11 @@ class ZeroShotKTSolver(object):
         self.test_loader = get_test_loader(args)
 
         ## Optimizers & Schedulers
-        self.optimizer_generator = optim.Adam(self.generator.parameters(), lr=args.generator_learning_rate)
+        self.optimizer_generator = optim.AdamW(self.generator.parameters(), lr=args.generator_learning_rate,
+                                               betas=(0.9, 0.999))
         self.scheduler_generator = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_generator, args.total_n_pseudo_batches, last_epoch=-1)
-        self.optimizer_student = optim.Adam(self.student.parameters(), lr=args.student_learning_rate)
+        self.optimizer_student = optim.AdamW(self.student.parameters(), lr=args.student_learning_rate,
+                                             betas=(0.9, 0.999))
         self.scheduler_student = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_student, args.total_n_pseudo_batches, last_epoch=-1)
 
         ### Set up & Resume
@@ -93,10 +130,13 @@ class ZeroShotKTSolver(object):
             if idx_pseudo % self.n_repeat_batch < self.args.n_generator_iter:
                 student_logits, *student_activations = self.student(x_pseudo)
                 teacher_logits, *teacher_activations = self.teacher(x_pseudo)
-                generator_total_loss = self.KT_loss_generator(student_logits, teacher_logits)
+
+                generator_loss = self.KT_loss_generator(student_logits, teacher_logits)
+                reg_loss = self.annealator(outputs=generator_loss, inputs=x_pseudo)
+                total_loss = generator_loss + reg_loss
 
                 self.optimizer_generator.zero_grad()
-                generator_total_loss.backward()
+                total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.generator.parameters(), 5)
                 self.optimizer_generator.step()
 
@@ -121,7 +161,7 @@ class ZeroShotKTSolver(object):
                 with torch.no_grad():
                     teacher_maxes, teacher_argmaxes = torch.max(torch.softmax(teacher_logits, dim=1), dim=1)
                     student_maxes, student_argmaxes = torch.max(torch.softmax(student_logits, dim=1), dim=1)
-                    running_generator_total_loss.update(float(generator_total_loss))
+                    running_generator_total_loss.update(float(total_loss))
                     running_student_total_loss.update(float(student_total_loss))
                     running_teacher_maxes_avg.update(float(torch.mean(teacher_maxes)))
                     running_student_maxes_avg.update(float(torch.mean(student_maxes)))

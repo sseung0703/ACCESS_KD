@@ -1,6 +1,7 @@
-* Adversarial Perturbation for ZSKT
 
-**This repo referenced and enhanced the performance
+# Adversarial Perturbation for ZSKT
+
+## This repo referenced and enhanced the performance
 ```
 @incollection{Micaelli2019ZeroShotKT,
 title = {Zero-shot Knowledge Transfer via Adversarial Belief Matching},

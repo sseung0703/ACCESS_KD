@@ -80,6 +80,10 @@ class ZeroShotKTSolver(object):
 
         ### Set up & Resume
         self.n_pseudo_batches = 0
+        if not os.path.isdir(args.log_directory_path):
+            os.mkdir(args.log_directory_path)
+        if not os.path.isdir(args.save_model_path):
+            os.mkdir(args.save_model_path)
         self.experiment_path = os.path.join(args.log_directory_path, args.experiment_name)
         self.save_model_path = os.path.join(args.save_model_path, args.experiment_name)
         self.logger = Logger(log_dir=self.experiment_path)
@@ -122,6 +126,7 @@ class ZeroShotKTSolver(object):
 
         end = time()
         idx_pseudo = 0
+        best_acc = 0
         while self.n_pseudo_batches < self.args.total_n_pseudo_batches:
             x_pseudo = self.generator.__next__()
             running_data_time.update(time() - end)
@@ -201,10 +206,10 @@ class ZeroShotKTSolver(object):
                         teacher_maxes_distribution, teacher_argmaxes_distribution = [], []
                         student_maxes_distribution, student_argmaxes_distribution = [], []
 
-                if self.args.save_n_checkpoints > 1:
-                    if (self.n_pseudo_batches+1) % int(self.args.total_n_pseudo_batches / self.args.save_n_checkpoints) == 0:
-                        test_acc = self.test()
-                        self.save_model(test_acc=test_acc)
+                # if self.args.save_n_checkpoints > 1:
+                #     if (self.n_pseudo_batches+1) % int(self.args.total_n_pseudo_batches / self.args.save_n_checkpoints) == 0:
+                #         test_acc = self.test()
+                #         self.save_model(test_acc=test_acc)
 
                 self.n_pseudo_batches += 1
                 self.scheduler_student.step()
@@ -215,10 +220,11 @@ class ZeroShotKTSolver(object):
             end = time()
 
         test_acc = self.test()
-        if self.args.save_final_model:  # make sure last epoch saved
+
+        if test_acc > best_acc:  # make sure last epoch saved
             self.save_model(test_acc=test_acc)
 
-        return test_acc*100
+        return test_acc * 100
 
 
     def test(self):
@@ -285,11 +291,6 @@ class ZeroShotKTSolver(object):
 
     def save_model(self, test_acc):
 
-        delete_files_from_name(self.save_model_path, "test_acc_", type='contains')
-        file_name = "n_batches_{}_test_acc_{:02.2f}".format(self.n_pseudo_batches, test_acc * 100)
-        with open(os.path.join(self.save_model_path, file_name), 'w+') as f:
-            f.write("NA")
-
         torch.save({'args': self.args,
                     'n_pseudo_batches': self.n_pseudo_batches,
                     'generator_state_dict': self.generator.state_dict(),
@@ -299,5 +300,5 @@ class ZeroShotKTSolver(object):
                     'scheduler_generator': self.scheduler_generator.state_dict(),
                     'scheduler_student': self.scheduler_student.state_dict(),
                     'test_acc': test_acc},
-                   os.path.join(self.save_model_path, "last.pth.tar"))
+                   os.path.join(self.save_model_path, "last.pth"))
         print("\nSaved model with test acc {:02.2f}%\n".format(test_acc * 100))

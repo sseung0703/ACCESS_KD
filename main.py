@@ -60,28 +60,24 @@ if __name__ == "__main__":
     parser.add_argument('--AT_beta', type=float, default=250, help='beta coefficient for AT loss')
     parser.add_argument('--seeds', nargs='*', type=int, default=[0, 1, 2])
     parser.add_argument('--use_gpu', type=str2bool, default=True, help='')
+    parser.add_argument('--pretrained_models_path', nargs="?", type=str, default='./Pretrained/')
+    parser.add_argument('--log_directory_path', type=str, default="./logs")
+    parser.add_argument('--save_model_path', type=str, default="./save/")
+    parser.add_argument('--workers', type=int, default=8)
 
-    parser.add_argument('--pretrained_models_path', nargs="?", type=str, default='/home/paul/Pretrained/')
-    parser.add_argument('--datasets_path', type=str, default="/home/paul/Datasets/Pytorch/")
-    parser.add_argument('--log_directory_path', type=str, default="/home/paul/git/ZeroShotKnowledgeTransfer/logs/")
-    parser.add_argument('--save_final_model', type=str2bool, default=0)
-    parser.add_argument('--save_n_checkpoints', type=int, default=0)
-    parser.add_argument('--save_model_path', type=str, default="/home/paul/git/FewShotKT/logs/")
-    parser.add_argument('--workers', type=int, default=1)
+    parser.add_argument('--save_n_checkpoints', type=int, default=0, help="Useless")
 
     args = parser.parse_args()
-    args.experiment_name = 'ZeroShotKnowledgeTransfer_{}_{}_{}_gi{}_si{}_zd{}_plr{}_slr{}_bs{}_T{}_beta{}'.format(
+    args.experiment_name = 'ZSKT_{}_{}_{}_gi{}_si{}_plr{}_slr{}_bs{}'.format(
         args.dataset,
         args.teacher_architecture,
         args.student_architecture,
         args.n_generator_iter,
         args.n_student_iter,
-        args.z_dim,
         args.generator_learning_rate,
         args.student_learning_rate,
         args.batch_size,
-        args.KL_temperature,
-        args.AT_beta)
+        )
 
     print('\nTotal data batches: {}'.format(args.total_n_pseudo_batches))
     print('Logging results every {} batch'.format(args.log_freq))

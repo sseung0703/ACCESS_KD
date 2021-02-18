@@ -1,0 +1,24 @@
+dataset 	 CIFAR10
+total_n_pseudo_batches 	 16000
+n_generator_iter 	 1
+n_student_iter 	 5
+batch_size 	 128
+z_dim 	 100
+student_learning_rate 	 0.002
+generator_learning_rate 	 0.001
+teacher_architecture 	 WRN-40-2
+student_architecture 	 WRN-16-2
+KL_temperature 	 1
+AT_beta 	 250
+seeds 	 [0, 1, 2]
+use_gpu 	 True
+device 	 cuda
+pretrained_models_path 	 ./Pretrained/
+datasets_path 	 /home/paul/Datasets/Pytorch/
+log_directory_path 	 ./logs/
+save_final_model 	 0
+save_n_checkpoints 	 0
+save_model_path 	 /home/paul/git/FewShotKT/logs/
+workers 	 1
+log_freq 	 200
+experiment_name 	 ZeroShotKnowledgeTransfer_CIFAR10_WRN-40-2_WRN-16-2_gi1_si5_zd100_plr0.001_slr0.002_bs128_T1_beta250/ZeroShotKnowledgeTransfer_CIFAR10_WRN-40-2_WRN-16-2_gi1_si5_zd100_plr0.001_slr0.002_bs128_T1_beta250_seed0

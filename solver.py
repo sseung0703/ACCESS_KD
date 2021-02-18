@@ -6,46 +6,44 @@ from utils.datasets import *
 from models.selector import *
 from utils.loaders import *
 from torch.autograd import grad
-
-# def stack_grad(self, model): -> for gradident check.
-    #     total_norm = 0
-    #     for p in model.parameters():
-    #         param_norm = p.grad.data.norm(2)
-    #         total_norm += param_norm.item() ** 2
-    #     total_norm = total_norm ** (1. / 2)
-    #
-    #     return total_norm
+import torch.nn as nn
+import math 
 
 class grad_anneal(nn.Module):
-    def __init__(self, alpha, gamma, batch_size, feature_size):
+    def __init__(self, alpha, gamma, batch_size, feature_size, total_iteration):
         super(grad_anneal, self).__init__()
+        self.total_iter = total_iteration
         self.alpha = alpha
         self.gamma = gamma
         self.batch_size = batch_size
         self.feature_size = feature_size
+        self.register_buffer('cosin_decay', torch.zeros(1))
         self.register_buffer('Gaussian_generator', torch.zeros(batch_size, feature_size))
         self.register_buffer('L2_GRAD_NORM', torch.zeros(1))
         self.register_buffer('approx_constraint', torch.zeros(1))
 
-    def forward(self, outputs, inputs):
+    def forward(self, outputs, inputs, cur_iter):
         self.Gaussian_generator = torch.randn(self.batch_size, self.feature_size)
         self.L2_GRAD_NORM, _Gradient = self._grad(outputs=outputs, inputs=inputs)
         self.approx_constraint = self._constraint(Gradient=_Gradient, rv=self.Gaussian_generator)
-
-        return self.alpha * self.approx_constraint + 0.5 * self.gamma * self.L2_GRAD_NORM
+        self.cosin_decay = math.cos(math.pi*0.5* cur_iter/self.total_iter)
+        return (self.alpha * self.approx_constraint + 0.5 * self.gamma * self.L2_GRAD_NORM) * self.cosin_decay
 
     def _grad(self, outputs, inputs):
         Gradient = grad(outputs=outputs,
                         inputs=inputs,
-                        grad_outputs=torch.ones_like(inputs.shape),
+                        grad_outputs=torch.ones_like(outputs),
                         retain_graph=True,
                         create_graph=True)[0]
+        
         Gradient = Gradient.view(self.batch_size, -1)
         GradNorm = torch.mean(torch.bmm(Gradient.unsqueeze(1), Gradient.unsqueeze(-1)).squeeze())
+        
         return GradNorm, Gradient
 
     def _constraint(self, Gradient, rv):
-        return torch.mean(torch.bmm(Gradient.unsqueeze(1), rv.unsqueeze(-1)).squeeze()).abs()
+        rv.requires_grad = True
+        return torch.mean(torch.bmm(Gradient.unsqueeze(1), rv.unsqueeze(-1).to('cuda:7')).abs().squeeze())
 
 class ZeroShotKTSolver(object):
     """ Main solver class to train and test the generator and student adversarially """
@@ -63,10 +61,7 @@ class ZeroShotKTSolver(object):
                                     pretrained_models_path=args.pretrained_models_path).to(args.device)
         self.teacher.eval()
         self.student.train()
-        self.annealator = grad_anneal(alpha=args.alpha,
-                                      gamma=args.gamma,
-                                      feature_size=32 ** 2,
-                                      batch_size=args.batch_size)
+        self.annealator = grad_anneal(alpha=5, gamma=2.5, feature_size=3 * 32 *32, batch_size=args.batch_size, args.total_n_pseudo_batches)
 
         ## Loaders
         self.n_repeat_batch = args.n_generator_iter + args.n_student_iter
@@ -76,17 +71,13 @@ class ZeroShotKTSolver(object):
         ## Optimizers & Schedulers
         self.optimizer_generator = optim.AdamW(self.generator.parameters(), lr=args.generator_learning_rate,
                                                betas=(0.9, 0.999))
-        self.scheduler_generator = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_generator, args.total_n_pseudo_batches, last_epoch=-1)
+        self.scheduler_generator = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_generator, args.total_n_pseudo_batches, eta_min= 1e-5, last_epoch=-1)
         self.optimizer_student = optim.AdamW(self.student.parameters(), lr=args.student_learning_rate,
                                              betas=(0.9, 0.999))
-        self.scheduler_student = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_student, args.total_n_pseudo_batches, last_epoch=-1)
+        self.scheduler_student = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_student, args.total_n_pseudo_batches, eta_min=1e-5, last_epoch=-1)
 
         ### Set up & Resume
         self.n_pseudo_batches = 0
-        if not os.path.isdir(args.log_directory_path):
-            os.mkdir(args.log_directory_path)
-        if not os.path.isdir(args.save_model_path):
-            os.mkdir(args.save_model_path)
         self.experiment_path = os.path.join(args.log_directory_path, args.experiment_name)
         self.save_model_path = os.path.join(args.save_model_path, args.experiment_name)
         self.logger = Logger(log_dir=self.experiment_path)
@@ -129,8 +120,9 @@ class ZeroShotKTSolver(object):
 
         end = time()
         idx_pseudo = 0
-        best_acc = 0
+
         while self.n_pseudo_batches < self.args.total_n_pseudo_batches:
+            self.optimizer_generator.zero_grad()
             x_pseudo = self.generator.__next__()
             running_data_time.update(time() - end)
 
@@ -138,14 +130,13 @@ class ZeroShotKTSolver(object):
             if idx_pseudo % self.n_repeat_batch < self.args.n_generator_iter:
                 student_logits, *student_activations = self.student(x_pseudo)
                 teacher_logits, *teacher_activations = self.teacher(x_pseudo)
-
-                generator_loss = self.args.sigma * self.KT_loss_generator(student_logits, teacher_logits)
-                reg_loss = self.annealator(outputs=generator_loss, inputs=x_pseudo)
+                
+                generator_loss = self.KT_loss_generator(student_logits, teacher_logits)
+                reg_loss = self.annealator(outputs=generator_loss, inputs=x_pseudo, self.n_pseudo_batches)
                 total_loss = generator_loss + reg_loss
 
-                self.optimizer_generator.zero_grad()
                 total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.generator.parameters(), 5)
+                # torch.nn.utils.clip_grad_norm_(self.generator.parameters(), 5)
                 self.optimizer_generator.step()
 
 
@@ -160,7 +151,7 @@ class ZeroShotKTSolver(object):
 
                 self.optimizer_student.zero_grad()
                 student_total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.student.parameters(), 5)
+                # torch.nn.utils.clip_grad_norm_(self.student.parameters(), 5)
                 self.optimizer_student.step()
 
 
@@ -181,6 +172,7 @@ class ZeroShotKTSolver(object):
 
                 if (self.n_pseudo_batches+1) % self.args.log_freq == 0:
                     test_acc = self.test()
+                    print("Test Acc.:{:02.2f}%".format(100 * test_acc))
 
                     with torch.no_grad():
                         print('\nBatch {}/{} -- Generator Loss: {:02.2f} -- Student Loss: {:02.2f}'.format(self.n_pseudo_batches, self.args.total_n_pseudo_batches, running_generator_total_loss.avg(), running_student_total_loss.avg()))
@@ -195,7 +187,7 @@ class ZeroShotKTSolver(object):
                         self.logger.scalar_summary('TIME/data_time_sec', running_data_time.avg(), self.n_pseudo_batches)
                         self.logger.scalar_summary('TIME/batch_time_sec', running_batch_time.avg(), self.n_pseudo_batches)
                         self.logger.scalar_summary('EVALUATE/test_acc', test_acc*100, self.n_pseudo_batches)
-                        self.logger.image_summary('RANDOM', self.generator.samples(n=9, grid=True), self.n_pseudo_batches)
+            #            self.logger.image_summary('RANDOM', self.generator.samples(n=9, grid=True), self.n_pseudo_batches)
                         self.logger.histo_summary('TEACHER_MAXES_DISTRIBUTION', torch.cat(teacher_maxes_distribution), self.n_pseudo_batches)
                         self.logger.histo_summary('TEACHER_ARGMAXES_DISTRIBUTION', torch.cat(teacher_argmaxes_distribution), self.n_pseudo_batches)
                         self.logger.histo_summary('STUDENT_MAXES_DISTRIBUTION', torch.cat(student_maxes_distribution), self.n_pseudo_batches)
@@ -209,10 +201,10 @@ class ZeroShotKTSolver(object):
                         teacher_maxes_distribution, teacher_argmaxes_distribution = [], []
                         student_maxes_distribution, student_argmaxes_distribution = [], []
 
-                # if self.args.save_n_checkpoints > 1:
-                #     if (self.n_pseudo_batches+1) % int(self.args.total_n_pseudo_batches / self.args.save_n_checkpoints) == 0:
-                #         test_acc = self.test()
-                #         self.save_model(test_acc=test_acc)
+                if self.args.save_n_checkpoints > 1:
+                    if (self.n_pseudo_batches+1) % int(self.args.total_n_pseudo_batches / self.args.save_n_checkpoints) == 0:
+                        test_acc = self.test()
+                        self.save_model(test_acc=test_acc)
 
                 self.n_pseudo_batches += 1
                 self.scheduler_student.step()
@@ -223,27 +215,30 @@ class ZeroShotKTSolver(object):
             end = time()
 
         test_acc = self.test()
-
-        if test_acc > best_acc:  # make sure last epoch saved
+        if self.args.save_final_model:  # make sure last epoch saved
             self.save_model(test_acc=test_acc)
 
-        return test_acc * 100
+        return test_acc*100
 
 
     def test(self):
 
         self.student.eval()
         running_test_acc = AggregateScalar()
-
+        total = 0
+        correct = 0
         with torch.no_grad():
             for x, y in self.test_loader:
                 x, y = x.to(self.args.device), y.to(self.args.device)
                 student_logits, *student_activations = self.student(x)
-                acc = accuracy(student_logits.data, y, topk=(1,))[0]
-                running_test_acc.update(float(acc), x.shape[0])
+                #acc = accuracy(student_logits.data, y, topk=(1,))[0]
+                #running_test_acc.update(float(acc), x.shape[0])
+                _, predicted = student_logits.max(1)
+                total += y.size(0)
+                correct += predicted.eq(y).sum().item()
 
         self.student.train()
-        return running_test_acc.avg()
+        return correct/total
 
 
     def attention(self, x):
@@ -294,6 +289,11 @@ class ZeroShotKTSolver(object):
 
     def save_model(self, test_acc):
 
+        delete_files_from_name(self.save_model_path, "test_acc_", type='contains')
+        file_name = "n_batches_{}_test_acc_{:02.2f}".format(self.n_pseudo_batches, test_acc * 100)
+        with open(os.path.join(self.save_model_path, file_name), 'w+') as f:
+            f.write("NA")
+
         torch.save({'args': self.args,
                     'n_pseudo_batches': self.n_pseudo_batches,
                     'generator_state_dict': self.generator.state_dict(),
@@ -303,5 +303,5 @@ class ZeroShotKTSolver(object):
                     'scheduler_generator': self.scheduler_generator.state_dict(),
                     'scheduler_student': self.scheduler_student.state_dict(),
                     'test_acc': test_acc},
-                   os.path.join(self.save_model_path, "last.pth"))
+                   os.path.join(self.save_model_path, "last.pth.tar"))
         print("\nSaved model with test acc {:02.2f}%\n".format(test_acc * 100))

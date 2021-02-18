@@ -19,7 +19,7 @@ def get_test_loader(args):
         transform_test = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean, std)])
-        test_dataset = datasets.CIFAR10(args.dataset_path, train=False, download=True, transform=transform_test)
+        test_dataset = datasets.CIFAR10('./', train=False, download=True, transform=transform_test)
 
     else:
         raise NotImplementedError

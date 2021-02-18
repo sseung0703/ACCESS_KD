@@ -24,10 +24,9 @@ def select_model(dataset,
             raise NotImplementedError
 
         if pretrained:
-            model_path = os.path.join(pretrained_models_path, dataset, model_name, "last.pth.tar")
-            print('Loading Model from {}'.format(model_path))
+            model_path = os.path.join(pretrained_models_path, dataset, model_name, "decay_1.ckpt")
             checkpoint = torch.load(model_path, map_location='cpu')
-            model.load_state_dict(checkpoint['state_dict'])
+            model.load_state_dict(checkpoint)
 
     else:
         raise NotImplementedError

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 class View(nn.Module):
     def __init__(self, size):
@@ -15,12 +16,14 @@ class Generator(nn.Module):
 
     def __init__(self, z_dim):
         super(Generator, self).__init__()
-
+        bn_eps = 1e1
+        
         self.layers = nn.Sequential(
-            nn.Linear(z_dim, 128 * 8**2),
+            nn.Linear(z_dim, 128 * 8 ** 2),
+            nn.LeakyReLU(0.2),
             View((-1, 128, 8, 8)),
             nn.BatchNorm2d(128),
-
+            
             nn.Upsample(scale_factor=2),
             nn.Conv2d(128, 128, 3, stride=1, padding=1),
             nn.BatchNorm2d(128),
@@ -33,8 +36,17 @@ class Generator(nn.Module):
 
             nn.Conv2d(64, 3, 3, stride=1, padding=1),
 
-            nn.BatchNorm2d(3, affine=True)
+            nn.BatchNorm2d(3, eps=bn_eps)
         )
+
+        self._init_weight()
+
+    def _init_weight(self):
+        modules = self.layers.modules()
+        for m in modules:
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2./n))
 
     def forward(self, z):
         return self.layers(z)
